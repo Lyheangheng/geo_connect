@@ -53,15 +53,21 @@ class CheckInModel {
     this.user,
   });
 
+  static double _parseDouble(dynamic val) {
+    if (val is num) return val.toDouble();
+    if (val is String) return double.tryParse(val) ?? 0.0;
+    return 0.0;
+  }
+
   factory CheckInModel.fromJson(Map<String, dynamic> json) {
     return CheckInModel(
       id: json['id'] as int,
       userId: json['userId'] as int?,
-      lat: (json['lat'] as num).toDouble(),
-      lng: (json['lng'] as num).toDouble(),
+      lat: _parseDouble(json['lat']),
+      lng: _parseDouble(json['lng']),
       locationName: json['locationName'] as String?,
       address: json['address'] as String?,
-      accuracy: json['accuracy'] != null ? (json['accuracy'] as num).toDouble() : null,
+      accuracy: json['accuracy'] != null ? _parseDouble(json['accuracy']) : null,
       description: json['description'] as String?,
       imageUrl: json['imageUrl'] as String?,
       createdAt: json['createdAt'] != null
