@@ -317,13 +317,14 @@ class ApiService {
       }
 
       final url = Uri.parse(ApiConstants.checking);
-      final body = jsonEncode({
+      final bodyMap = <String, dynamic>{
         'id': id,
         'description': ?description,
         'locationName': ?locationName,
         'address': ?address,
         'imageUrl': ?imageUrl,
-      });
+      };
+      final body = jsonEncode(bodyMap);
 
       final response = await _client.put(
         url,
