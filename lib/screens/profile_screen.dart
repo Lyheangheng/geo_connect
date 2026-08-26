@@ -11,6 +11,8 @@ class ProfileScreen extends StatelessWidget {
     final authProvider = context.watch<AuthProvider>();
     final user = authProvider.currentUser;
 
+    final hasProfileImage = user?.profileImage != null && user!.profileImage!.isNotEmpty;
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('My Profile'),
@@ -27,8 +29,8 @@ class ProfileScreen extends StatelessWidget {
                   alignment: Alignment.bottomRight,
                   children: [
                     Container(
-                      width: 100,
-                      height: 100,
+                      width: 104,
+                      height: 104,
                       decoration: BoxDecoration(
                         gradient: AppTheme.primaryGradient,
                         shape: BoxShape.circle,
@@ -40,22 +42,39 @@ class ProfileScreen extends StatelessWidget {
                           ),
                         ],
                       ),
-                      child: Center(
-                        child: Text(
-                          (user?.name.isNotEmpty ?? false)
-                              ? user!.name[0].toUpperCase()
-                              : 'U',
-                          style: const TextStyle(
-                            fontSize: 38,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.white,
-                          ),
-                        ),
+                      child: ClipOval(
+                        child: hasProfileImage
+                            ? Image.network(
+                                user.profileImage!,
+                                fit: BoxFit.cover,
+                                errorBuilder: (context, error, stackTrace) => Center(
+                                  child: Text(
+                                    user.name.isNotEmpty ? user.name[0].toUpperCase() : 'U',
+                                    style: const TextStyle(
+                                      fontSize: 40,
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.white,
+                                    ),
+                                  ),
+                                ),
+                              )
+                            : Center(
+                                child: Text(
+                                  (user?.name.isNotEmpty ?? false)
+                                      ? user!.name[0].toUpperCase()
+                                      : 'U',
+                                  style: const TextStyle(
+                                    fontSize: 40,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                              ),
                       ),
                     ),
                     if (user?.isVerified ?? false)
                       Container(
-                        padding: const EdgeInsets.all(4),
+                        padding: const EdgeInsets.all(5),
                         decoration: const BoxDecoration(
                           color: AppTheme.successColor,
                           shape: BoxShape.circle,
@@ -89,7 +108,7 @@ class ProfileScreen extends StatelessWidget {
               ),
               const SizedBox(height: 24),
 
-              // Account Details Card
+              // Account Information Card
               Container(
                 padding: const EdgeInsets.all(18),
                 decoration: BoxDecoration(
@@ -103,7 +122,7 @@ class ProfileScreen extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     const Text(
-                      'Account Information',
+                      'Account Details',
                       style: TextStyle(
                         fontSize: 15,
                         fontWeight: FontWeight.bold,
@@ -114,13 +133,13 @@ class ProfileScreen extends StatelessWidget {
                     _buildInfoRow(
                       icon: Icons.badge_outlined,
                       label: 'User ID',
-                      value: '#${user?.id ?? 1}',
+                      value: user != null ? '#${user.id}' : '#--',
                     ),
                     const SizedBox(height: 14),
                     _buildInfoRow(
                       icon: Icons.verified_user_outlined,
-                      label: 'Email Verification',
-                      value: (user?.isVerified ?? false) ? 'Verified' : 'Pending',
+                      label: 'Email Status',
+                      value: (user?.isVerified ?? false) ? 'Verified' : 'Pending Verification',
                       valueColor: (user?.isVerified ?? false)
                           ? AppTheme.successColor
                           : AppTheme.errorColor,
@@ -129,7 +148,9 @@ class ProfileScreen extends StatelessWidget {
                     _buildInfoRow(
                       icon: Icons.info_outline,
                       label: 'Bio',
-                      value: user?.bio ?? 'University student assignment user.',
+                      value: (user?.bio != null && user!.bio!.isNotEmpty)
+                          ? user.bio!
+                          : 'No bio added yet.',
                     ),
                   ],
                 ),
@@ -175,6 +196,7 @@ class ProfileScreen extends StatelessWidget {
     Color? valueColor,
   }) {
     return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Icon(icon, size: 20, color: AppTheme.subtextColor),
         const SizedBox(width: 12),
