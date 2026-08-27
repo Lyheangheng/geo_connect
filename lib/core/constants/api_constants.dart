@@ -1,7 +1,7 @@
 class ApiConstants {
   // Configurable Base URL for Professor's Backend API
-  // Default: http://10.0.2.2:3000 (Android Emulator) or http://localhost:3000 (iOS / Web)
-  static String _baseUrl = 'http://10.0.2.2:3000';
+  // Default: https://where-am-i-silk.vercel.app (Production Backend API)
+  static String _baseUrl = 'https://where-am-i-silk.vercel.app';
 
   static String get baseUrl => _baseUrl;
 
