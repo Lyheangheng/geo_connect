@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:geo_connect/core/errors/api_exception.dart';
 import 'package:geo_connect/core/theme/app_theme.dart';
 import 'package:geo_connect/models/checkin_model.dart';
@@ -7,6 +8,14 @@ import 'package:geo_connect/widgets/custom_button.dart';
 import 'package:geo_connect/widgets/custom_text_field.dart';
 import 'package:geo_connect/widgets/interactive_map_widget.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
+
+enum LocationPermissionStatus {
+  unknown,
+  granted,
+  denied,
+  deniedForever,
+  serviceDisabled,
+}
 
 class LocationScreen extends StatefulWidget {
   const LocationScreen({super.key});
@@ -21,9 +30,17 @@ class _LocationScreenState extends State<LocationScreen> {
   final _descriptionController = TextEditingController();
   final ApiService _apiService = ApiService();
   
+  GoogleMapController? _mapController;
+
   // Selected location coordinates (Default: Bangkok Center 13.7563, 100.5018)
   double _selectedLat = 13.7563;
   double _selectedLng = 100.5018;
+  double? _gpsAccuracy;
+
+  bool _isManualSelection = false;
+  bool _isGettingLocation = false;
+  String? _locationErrorMessage;
+  LocationPermissionStatus _permissionStatus = LocationPermissionStatus.unknown;
 
   CheckInModel? _existingCheckIn;
   bool _isLoadingInitial = true;
@@ -33,18 +50,24 @@ class _LocationScreenState extends State<LocationScreen> {
   @override
   void initState() {
     super.initState();
-    _fetchMyLatestCheckIn();
+    _initScreenData();
   }
 
   @override
   void dispose() {
     _locationNameController.dispose();
     _descriptionController.dispose();
+    _mapController?.dispose();
     super.dispose();
   }
 
-  /// Fetches the user's check-ins using GET /api/checking?my=true
-  /// and pre-fills the latest check-in data.
+  /// Initial screen load: fetches user check-in and triggers GPS positioning
+  Future<void> _initScreenData() async {
+    await _fetchMyLatestCheckIn();
+    await _getCurrentDeviceLocation();
+  }
+
+  /// Fetches user's check-ins using GET /api/checking?my=true
   Future<void> _fetchMyLatestCheckIn() async {
     setState(() {
       _isLoadingInitial = true;
@@ -53,7 +76,6 @@ class _LocationScreenState extends State<LocationScreen> {
     try {
       final myCheckIns = await _apiService.getMyCheckIns();
       if (myCheckIns.isNotEmpty) {
-        // Sort descending by createdAt to find the latest
         myCheckIns.sort((a, b) {
           final tA = a.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
           final tB = b.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
@@ -78,6 +100,127 @@ class _LocationScreenState extends State<LocationScreen> {
           _isLoadingInitial = false;
         });
       }
+    }
+  }
+
+  /// Requests device's current high-precision GPS position
+  Future<void> _getCurrentDeviceLocation({bool isManualRecenter = false}) async {
+    if (_isGettingLocation) return;
+
+    setState(() {
+      _isGettingLocation = true;
+      _locationErrorMessage = null;
+    });
+
+    try {
+      // 1. Check if location services (GPS) are enabled
+      final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        if (!mounted) return;
+        setState(() {
+          _isGettingLocation = false;
+          _permissionStatus = LocationPermissionStatus.serviceDisabled;
+          _locationErrorMessage = 'Location services (GPS) are disabled on your device.';
+        });
+        return;
+      }
+
+      // 2. Check location permissions
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied) {
+          if (!mounted) return;
+          setState(() {
+            _isGettingLocation = false;
+            _permissionStatus = LocationPermissionStatus.denied;
+            _locationErrorMessage = 'Location permission was denied.';
+          });
+          return;
+        }
+      }
+
+      if (permission == LocationPermission.deniedForever) {
+        if (!mounted) return;
+        setState(() {
+          _isGettingLocation = false;
+          _permissionStatus = LocationPermissionStatus.deniedForever;
+          _locationErrorMessage = 'Location permissions are permanently denied in settings.';
+        });
+        return;
+      }
+
+      // Permission granted
+      _permissionStatus = LocationPermissionStatus.granted;
+
+      // 3. Get precise current position
+      final position = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          timeLimit: Duration(seconds: 10),
+        ),
+      );
+
+      if (!mounted) return;
+
+      setState(() {
+        _selectedLat = position.latitude;
+        _selectedLng = position.longitude;
+        _gpsAccuracy = position.accuracy;
+        _isManualSelection = false;
+        _isGettingLocation = false;
+        _locationErrorMessage = null;
+      });
+
+      _animateCameraToPosition(position.latitude, position.longitude);
+
+      if (isManualRecenter) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Updated to GPS location (Accuracy: ${position.accuracy.toStringAsFixed(0)}m)'),
+            backgroundColor: AppTheme.successColor,
+            duration: const Duration(seconds: 2),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+
+      // Fallback: try last known position if current request times out
+      try {
+        final lastPosition = await Geolocator.getLastKnownPosition();
+        if (lastPosition != null) {
+          setState(() {
+            _selectedLat = lastPosition.latitude;
+            _selectedLng = lastPosition.longitude;
+            _gpsAccuracy = lastPosition.accuracy;
+            _isManualSelection = false;
+            _isGettingLocation = false;
+            _locationErrorMessage = null;
+          });
+          _animateCameraToPosition(lastPosition.latitude, lastPosition.longitude);
+          return;
+        }
+      } catch (_) {}
+
+      setState(() {
+        _isGettingLocation = false;
+        _locationErrorMessage = 'Could not acquire GPS position. Tap map to select manually.';
+      });
+    }
+  }
+
+  void _animateCameraToPosition(double lat, double lng) {
+    if (_mapController != null) {
+      _mapController!.animateCamera(
+        CameraUpdate.newCameraPosition(
+          CameraPosition(
+            target: LatLng(lat, lng),
+            zoom: 16.5,
+          ),
+        ),
+      );
     }
   }
 
@@ -245,9 +388,25 @@ class _LocationScreenState extends State<LocationScreen> {
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh),
-            onPressed: _fetchMyLatestCheckIn,
+            onPressed: _initScreenData,
+            tooltip: 'Refresh',
           ),
         ],
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: _isGettingLocation ? null : () => _getCurrentDeviceLocation(isManualRecenter: true),
+        backgroundColor: AppTheme.primaryColor,
+        icon: _isGettingLocation
+            ? const SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+              )
+            : const Icon(Icons.my_location, color: Colors.white),
+        label: Text(
+          _isGettingLocation ? 'Getting location...' : 'Use My Location',
+          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+        ),
       ),
       body: SafeArea(
         child: _isLoadingInitial
@@ -265,7 +424,7 @@ class _LocationScreenState extends State<LocationScreen> {
                       Container(
                         width: double.infinity,
                         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                        margin: const EdgeInsets.only(bottom: 16),
+                        margin: const EdgeInsets.only(bottom: 12),
                         decoration: BoxDecoration(
                           color: _existingCheckIn != null
                               ? AppTheme.secondaryColor.withValues(alpha: 0.15)
@@ -305,6 +464,77 @@ class _LocationScreenState extends State<LocationScreen> {
                         ),
                       ),
 
+                      // GPS Status / Permission Alert Banner (if any error)
+                      if (_locationErrorMessage != null) ...[
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(12),
+                          margin: const EdgeInsets.only(bottom: 12),
+                          decoration: BoxDecoration(
+                            color: AppTheme.errorColor.withValues(alpha: 0.15),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: AppTheme.errorColor),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  const Icon(Icons.location_off, size: 18, color: AppTheme.errorColor),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: Text(
+                                      _locationErrorMessage!,
+                                      style: const TextStyle(
+                                        fontSize: 12,
+                                        color: AppTheme.textColor,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 8),
+                              Row(
+                                children: [
+                                  if (_permissionStatus == LocationPermissionStatus.serviceDisabled) ...[
+                                    ElevatedButton.icon(
+                                      onPressed: () => Geolocator.openLocationSettings(),
+                                      style: ElevatedButton.styleFrom(
+                                        backgroundColor: AppTheme.primaryColor,
+                                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                                      ),
+                                      icon: const Icon(Icons.settings, size: 14),
+                                      label: const Text('Open GPS Settings', style: TextStyle(fontSize: 11)),
+                                    ),
+                                  ] else if (_permissionStatus == LocationPermissionStatus.deniedForever) ...[
+                                    ElevatedButton.icon(
+                                      onPressed: () => Geolocator.openAppSettings(),
+                                      style: ElevatedButton.styleFrom(
+                                        backgroundColor: AppTheme.primaryColor,
+                                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                                      ),
+                                      icon: const Icon(Icons.settings_applications, size: 14),
+                                      label: const Text('Open App Settings', style: TextStyle(fontSize: 11)),
+                                    ),
+                                  ] else ...[
+                                    ElevatedButton.icon(
+                                      onPressed: () => _getCurrentDeviceLocation(),
+                                      style: ElevatedButton.styleFrom(
+                                        backgroundColor: AppTheme.primaryColor,
+                                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                                      ),
+                                      icon: const Icon(Icons.refresh, size: 14),
+                                      label: const Text('Retry GPS Location', style: TextStyle(fontSize: 11)),
+                                    ),
+                                  ],
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+
                       // Live Interactive Google Map Picker
                       Container(
                         width: double.infinity,
@@ -321,18 +551,26 @@ class _LocationScreenState extends State<LocationScreen> {
                           children: [
                             InteractiveMapWidget(
                               initialPosition: selectedPosition,
-                              initialZoom: 14.0,
+                              initialZoom: 16.5,
+                              showCurrentLocationButton: false, // Custom FAB used
                               markers: {
                                 Marker(
                                   markerId: const MarkerId('selected_point'),
                                   position: selectedPosition,
-                                  infoWindow: const InfoWindow(title: 'Check-in Position'),
+                                  infoWindow: InfoWindow(
+                                    title: _isManualSelection ? 'Manual Selected Point' : 'GPS Device Location',
+                                    snippet: '${_selectedLat.toStringAsFixed(5)}, ${_selectedLng.toStringAsFixed(5)}',
+                                  ),
                                 ),
+                              },
+                              onMapCreated: (controller) {
+                                _mapController = controller;
                               },
                               onTap: (point) {
                                 setState(() {
                                   _selectedLat = point.latitude;
                                   _selectedLng = point.longitude;
+                                  _isManualSelection = true;
                                 });
                               },
                             ),
@@ -350,7 +588,7 @@ class _LocationScreenState extends State<LocationScreen> {
                                     Icon(Icons.touch_app, size: 14, color: AppTheme.secondaryColor),
                                     SizedBox(width: 6),
                                     Text(
-                                      'Tap map to select location',
+                                      'Tap map to fine-tune location',
                                       style: TextStyle(
                                         fontSize: 11,
                                         fontWeight: FontWeight.bold,
@@ -361,33 +599,108 @@ class _LocationScreenState extends State<LocationScreen> {
                                 ),
                               ),
                             ),
+                            if (_isGettingLocation)
+                              Container(
+                                color: Colors.black38,
+                                child: const Center(
+                                  child: Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      CircularProgressIndicator(color: AppTheme.primaryColor),
+                                      SizedBox(height: 8),
+                                      Text(
+                                        'Getting your location...',
+                                        style: TextStyle(
+                                          color: Colors.white,
+                                          fontWeight: FontWeight.bold,
+                                          fontSize: 13,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
                           ],
                         ),
                       ),
                       const SizedBox(height: 16),
 
-                      // Selected Coordinates Summary Card
+                      // Selected Location Summary Card (Latitude, Longitude, Accuracy)
                       Container(
                         padding: const EdgeInsets.all(14),
                         decoration: BoxDecoration(
                           color: AppTheme.cardColor.withValues(alpha: 0.4),
                           borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: AppTheme.secondaryColor.withValues(alpha: 0.3),
+                          ),
                         ),
-                        child: Row(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            const Icon(Icons.my_location, color: AppTheme.secondaryColor, size: 20),
-                            const SizedBox(width: 10),
-                            Expanded(
-                              child: Text(
-                                'Selected Point: ${_selectedLat.toStringAsFixed(6)}, ${_selectedLng.toStringAsFixed(6)}',
-                                style: const TextStyle(
-                                  fontSize: 13,
-                                  color: AppTheme.textColor,
-                                  fontWeight: FontWeight.w600,
-                                  fontFamily: 'monospace',
+                            Row(
+                              children: [
+                                Icon(
+                                  _isManualSelection ? Icons.touch_app : Icons.gps_fixed,
+                                  color: _isManualSelection ? AppTheme.secondaryColor : AppTheme.successColor,
+                                  size: 18,
                                 ),
-                              ),
+                                const SizedBox(width: 8),
+                                Text(
+                                  _isManualSelection ? 'Location selected (Manual Map Tap)' : 'Location selected (Device GPS)',
+                                  style: const TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.bold,
+                                    color: AppTheme.textColor,
+                                  ),
+                                ),
+                              ],
                             ),
+                            const Divider(color: AppTheme.surfaceColor, height: 16),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Text(
+                                  'Latitude: ${_selectedLat.toStringAsFixed(6)}',
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    color: AppTheme.textColor,
+                                    fontWeight: FontWeight.w600,
+                                    fontFamily: 'monospace',
+                                  ),
+                                ),
+                                Text(
+                                  'Longitude: ${_selectedLng.toStringAsFixed(6)}',
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    color: AppTheme.textColor,
+                                    fontWeight: FontWeight.w600,
+                                    fontFamily: 'monospace',
+                                  ),
+                                ),
+                              ],
+                            ),
+                            if (_gpsAccuracy != null && !_isManualSelection) ...[
+                              const SizedBox(height: 6),
+                              Row(
+                                children: [
+                                  const Text(
+                                    'Accuracy: ',
+                                    style: TextStyle(fontSize: 12, color: AppTheme.subtextColor),
+                                  ),
+                                  Text(
+                                    '${_gpsAccuracy!.toStringAsFixed(0)}m',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.bold,
+                                      color: _gpsAccuracy! <= 20
+                                          ? AppTheme.successColor
+                                          : AppTheme.warningColor,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
                           ],
                         ),
                       ),
@@ -482,6 +795,7 @@ class _LocationScreenState extends State<LocationScreen> {
                           ),
                         ),
                       ],
+                      const SizedBox(height: 80), // Extra space for FAB
                     ],
                   ),
                 ),

@@ -13,6 +13,7 @@ class AppTheme {
   static const Color subtextColor = Color(0xFF94A3B8);
   static const Color errorColor = Color(0xFFEF4444);
   static const Color successColor = Color(0xFF22C55E);
+  static const Color warningColor = Color(0xFFF59E0B);
 
   // Gradients
   static const LinearGradient primaryGradient = LinearGradient(
